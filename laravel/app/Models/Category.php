@@ -3,13 +3,17 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use SoftDeletes;
 
 class Category extends Model
 {
+
+    protected $dates = ['deleted_at'];
+    
     protected $fillable = ['name'];
 
-    public function category()
+    public function products()
     {
-         return $this->belongsTo(Category::class);
+        return $this->hasMany(Product::class);
     }
 }
