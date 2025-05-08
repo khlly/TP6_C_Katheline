@@ -1,46 +1,63 @@
 <?php
 
 namespace App\Http\Controllers;
+
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
+use Intervention\Image\Facades\Image;
 
 class UploadController extends Controller
 {
-
     public function upload(Request $request)
     {
-        // Validate the request
         $request->validate([
             'document' => 'required|file|mimes:jpg,jpeg,png,pdf|max:2048',
         ]);
-        
-        // Store the file
-        $path = $request->file('document')->store('uploads');
-        
-        // Return a response  
-        return response()->json(['path' => $path], 200);
-    }
 
-    
-    public function store(Request $request)
-    { 
-        $request->validate([
-            'image' => 'required|image|max:2048' // Validation rules for upload
-        ]);
-        $image = $request->file('image');
-        $fileName = uniqid() . '.' . $image->getClientOriginalExtension(); // G
-        $path = $image->storeAs('uploads', $fileName); // Store the original im
-        // // (Optional) Using Intervention Image
-        $thumbnailPath = 'thumbnails/' . $fileName;
-        $intervention = Image::make($image->getRealPath());
-        $intervention->fit(200, 200, function ($constraint) {
-            $constraint->aspectRatio();
-        })->save(storage_path('app/' . $thumbnailPath));
-        // (Alternative) Using pure Imagick
-        $imagick = new Imagick(storage_path('app/uploads/' . $fileName));
-        $imagick->resizeImage(200, 200, Imagick::FILTER_TRIANGLE, 1);
-        $imagick->writeImage(storage_path('app/thumbnails/' . $fileName));
-        // Update your Image model to store original and thumbnail paths (if ap
-        return redirect()->route('gallery.index')->with('success', 'Image upload');
+        $file = $request->file('document');
+        $extension = strtolower($file->getClientOriginalExtension());
+        $fileName = uniqid() . '.' . $extension;
 
+        // Store original file to local 'public' disk
+        $localPath = $file->storeAs('uploads', $fileName, 'public');
+
+        // Upload original file to MinIO
+        $minioOriginalPath = 'uploads/' . $fileName;
+        Storage::disk('minio')->put($minioOriginalPath, file_get_contents($file));
+
+        $isImage = in_array($extension, ['jpg', 'jpeg', 'png']);
+        $thumbnailLocalPath = null;
+        $thumbnailMinioPath = null;
+
+        if ($isImage) {
+            // Generate thumbnail
+            $thumbnail = Image::make($file->getRealPath())
+                ->fit(200, 200, function ($constraint) {
+                    $constraint->aspectRatio();
+                })
+                ->encode($extension, 90);
+
+            // Local thumbnail path
+            $thumbnailLocalPath = 'thumbnails/' . $fileName;
+            Storage::disk('public')->put($thumbnailLocalPath, $thumbnail->__toString());
+
+            // MinIO thumbnail path
+            $thumbnailMinioPath = 'thumbnails/' . $fileName;
+
+            // Ensure 'thumbnails' folder is visible in MinIO
+            // if (!Storage::disk('minio')->exists('thumbnails/.keep')) {
+            //     Storage::disk('minio')->put('thumbnails/.keep', '');
+            // }
+
+            // Upload thumbnail to MinIO
+            Storage::disk('minio')->put($thumbnailMinioPath, $thumbnail->__toString());
+        }
+
+        return response()->json([
+            'local_path' => $localPath ? 'storage/' . $localPath : false,
+            'minio_path' => $minioOriginalPath,
+            'thumbnail_local' => $thumbnailLocalPath ? 'storage/' . $thumbnailLocalPath : null,
+            'thumbnail_minio' => $thumbnailMinioPath,
+        ], 200);
     }
 }
